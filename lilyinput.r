@@ -1,104 +1,141 @@
 library(tidyverse)
 library(tuneR)
 
-source("load.R")
+#### ticks2rhythm ####
 
-symbolize_dur <- function(x, tpqn = 480){
+# ticks2rhythm takes arguments x and tpqn.
+# tick_value is defined by a note length or inter onset interval
+# tpqn is a constant that defines the ticks per quarter note (defaults to 480)
+
+# ticks2rhythm returns a string that is a precursor to lilypond notation. 
+
+# ticks2rhythm checks whether tick_value can be converted to a lilypond rhythm.
+# If tick_value matches up with a rhythm, the function returns that rhythm.
+# If tick_value exceeds the max allowable rhythm (1 whole note),
+# ticks2rhythm returns a series of tied notes equivalent to the long tick value.
+# If tick_value can't be converted, ticks2rhythm defaults to a quarter note.
+
+ticks2rhythm <- function(tick_value, tpqn = 480){
         
-        durs <- list("1", "2.", "2", "4.", "4", "8.", "8","16.","16","32", "64")
+        #set of allowable note symbol durations
+        rhythms <- list("1", "2.", "2", "4.", "4", "8.", 
+                        "8","16.","16","32", "64")
         
-        #undotted 1/64 -> 1
-        undot <- 2^(-4:2)*tpqn
-        undot <- sort(undot, decreasing =TRUE)
+        #ticks corresponding to undotted 1/64 -> 1
+        undotted <- 2^(-4:2)*tpqn
+        undotted <- sort(undotted, decreasing =TRUE)
         
-        #dotted 1/16 -> 1
-        dot <- 2^(-3:0)*tpqn + 2^(-2:1)*tpqn
-        dot <- sort(dot, decreasing =TRUE)
+        #ticks corresponding to dotted 1/16 -> 1
+        dotted <- 2^(-3:0)*tpqn + 2^(-2:1)*tpqn
+        dotted <- sort(dotted, decreasing =TRUE)
         
-        ticks <- sort(c(undot,dot), decreasing = TRUE)
+        #collect allowable tick durations
+        ticks <- sort(c(undotted,dotted), decreasing = TRUE)
         
-        if(any(x %in% ticks)){
-                ticks <- as.character(ticks)
-                ret <-  do.call(switch, c(as.character(x), setNames(durs, ticks)))
-        }else if(x > max(ticks)){
-                temp1 <- x
-                temp2 <- integer()
-                while(!temp1 %in% undot){
-                        temp2 <- c(temp2, head(undot[temp1>undot],1))
-                        temp1 <- temp1 - head(undot[temp1>undot],1)
-                }
-                temp2 <- c(temp2, temp1)
-                temp2 <- as.character(temp2)
-                temp2 <- lapply(temp2, function(x) do.call(switch, 
-                                                  c(x, setNames(durs, ticks))))
-                temp2 <- unlist(temp2)
-                
-                ret <- paste0("z", 
-                       temp2, 
-                       c(rep("~ ", length(temp2)-1),""), 
-                       collapse = " ")
+        lookup_rhythm <- function(tick_value){
+                #returns the rhythm that corresponds with tick_value        
+                do.call(switch, c(tick_value, setNames(rhythms, ticks)))
         }
+        
+        
+        if(any(tick_value %in% ticks)){
+                
+                #simple case of looking up the rhythm for a matching tick_value
+                
+                ticks <- as.character(ticks)
+                tick_value <- as.character(tick_value)
+                ret <-  lookup_rhythm(tick_value)
+                
+        }else if(tick_value > max(ticks)){
+                
+                difference <- tick_value
+                tied_notes <- integer()
+                
+                # looping method for when tick_value > whole note:
+                # take the biggest possible undotted tick value, the subtrahend.
+                # combine it with all previous subtrahends in tied_notes.
+                # subtract subtrahend from difference.
+                # loop until difference can coerce to an undotted tick value.
+                while(!difference %in% undotted){
+                        subtrahend <- head(undotted[difference>undotted],1)
+                        tied_notes <- c(tied_notes, subtrahend)
+                        difference <- difference - subtrahend
+                }
+                
+                # combine difference with subtrahends in tied_notes
+                tied_notes <- c(tied_notes, difference)
+                tied_notes <- as.character(tied_notes)
+                
+                # convert tied_notes to lilypond rhythms
+                tied_notes <- lapply(tied_notes, lookup_rhythm)
+                tied_notes <- unlist(tied_notes)
+                
+                # this string is a precursor to lilypond input
+                # tie together notes with ~
+                # "z" is a placeholder for future pitch value
+                ret <- paste0("z", 
+                              tied_notes,
+                              c(rep("~ ", length(tied_notes)-1),""),
+                              collapse = " ")
+                
+        }else{ret = "4"} #TODO handle more cases; e.g. miditick is prime
+        
         ret
 }
 
-lilyinput <- function(X, file = "Rsong.ly", 
+#### prepare_input ####
+
+# prepare_input adds new variables to a data frame 
+# so that lilyinput2 can use the data
+
+# prepare_input takes as input the output of tuneR::getMidiNotes
+# it adjusts the values in the notename column to conform with lilypond style.
+# it also adds columns that lilyinput2 needs for writing notes, including:
+# * a column for interonset interval (IOI),
+# * a column for duration. has strings almost written in lilypond notation,
+# * a column indicating whether a given duration ties notes together.
+
+prepare_input <- function(midiNotes){
+        mutate( .data    = midiNotes,
+                notename = str_replace(notename, "#", "is"),
+                ioi      = c(diff(time), last(length)),
+                duration = sapply(ioi, ticks2rhythm),
+                is_tied  = str_detect(duration, "~"))
+}
+
+#### lilyinput 2 ####
+
+# lilyinput2 reuses a lot of code from tuneR::lilyinput.
+
+# lilyinput2 takes a data frame as input and has many arguments for options
+
+# the data frame needs columns named pitch, duration, and is_tied
+# and will use those columns to write the notes in the lilypond file.
+# you can generate these columns using the prepare_input function with
+# the output of tuneR::getMidiNotes as the input. 
+
+lilyinput2 <- function(X, file = "Rsong.ly", 
                       Major = TRUE, key = "c", 
                       clef = c("treble", "bass", "alto", "tenor"), 
                       time = "4/4", endbar = TRUE, midi = TRUE, 
                       tempo = "2 = 60", 
                       textheight = 220, linewidth = 150, indent = 0, 
-                      fontsize = 14)
-{
+                      fontsize = 14){
+        
         clef <- match.arg(clef)
         
-        # notes, 97 entries in the pot (a,,, - a'''''):
-        if(Major){
-                pot <- 
-                        switch(key,
-                               d = c("c", "cis", "d", "dis", "e", "f", "fis", "g", "gis", "a", "bes", "b"),
-                               e = c("c", "cis", "d", "dis", "e", "f", "fis", "g", "gis", "a", "ais", "b"),
-                               f = c("c", "cis", "d", "es", "e", "f", "fis", "g", "as", "a", "bes", "b"),
-                               g = c("c", "cis", "d", "es", "e", "f", "fis", "g", "gis", "a", "bes", "b"),
-                               a = c("c", "cis", "d", "dis", "e", "f", "fis", "g", "gis", "a", "bes", "b"),
-                               b = c("c", "des", "d", "es", "e", "f", "fis", "g", "as", "a", "bes", "b"),
-                               es = c("c", "des", "d", "es", "e", "f", "ges", "g", "as", "a", "bes", "b"),
-                               c("c", "cis", "d", "es", "e", "f", "fis", "g", "gis", "a", "bes", "b")
-                        )
-        }else{
-                pot <- 
-                        switch(key,
-                               h = c("c", "cis", "d", "dis", "e", "f", "fis", "g", "gis", "a", "bes", "b"),
-                               cis = c("c", "cis", "d", "dis", "e", "f", "fis", "g", "gis", "a", "ais", "b"),
-                               d = c("c", "cis", "d", "es", "e", "f", "fis", "g", "as", "a", "bes", "b"),
-                               e = c("c", "cis", "d", "es", "e", "f", "fis", "g", "gis", "a", "bes", "b"),
-                               fis = c("c", "cis", "d", "dis", "e", "f", "fis", "g", "gis", "a", "bes", "b"),
-                               g = c("c", "des", "d", "es", "e", "f", "fis", "g", "as", "a", "bes", "b"),
-                               c = c("c", "des", "d", "es", "e", "f", "ges", "g", "as", "a", "bes", "b"),
-                               c("c", "cis", "d", "es", "e", "f", "fis", "g", "gis", "a", "bes", "b")
-                        )
-        }  
-        
-        pot <- unlist(lapply(
-                c(",,,", ",,", ",", "", "'", "''", "'''", "''''", "'''''"), 
-                function(x) paste(pot, x, sep="")))[-c(1:9, 107:108)]
         # Initializing
-        tie <- toene <- character(length(X$note)) 
+        notes <- character(length(X$notename)) 
         
-        # note: pitch, length, punctuation
-        note <- ifelse(is.na(X$note), "r", X$note)
+        # note components: pitch? duration? is it tied?
+        pitch <- ifelse(is.na(X$notename), "r", X$notename)
         duration <- ifelse(is.na(X$duration), NA, X$duration)
-        tie <- X$tie
-        #punctuation <- ifelse(X$punctuation, ".", "")
-        
-        # # start/end of slurs:
-        # if(sum(X$slur) %% 2) 
-        #         stop("More starting than ending slurs")
-        # slur[which(X$slur)] <- 
-        #         rep(c("(", ")"), sum(X$slur) %/% 2)
+        is_tied <- X$is_tied
+     
         # join notes:
-        toene <- ifelse(tie, 
-                        str_replace_all(duration, "z", note),
-                        paste(note, duration, sep = ""))
+        notes <- ifelse(is_tied, 
+                        str_replace_all(duration, "z", pitch),
+                        paste(pitch, duration, sep = ""))
         
         # mode
         mode <- if(Major) "\\major" else "\\minor"        
@@ -121,15 +158,16 @@ lilyinput <- function(X, file = "Rsong.ly",
         }else {if(key == "h") key <- "b"}
         
         # generate LilyPond file:
-        write(file = "test.txt",
+        
+        write(file = file,
               c("\\version \"2.18.2\"",
                 paste("#(set-global-staff-size", fontsize, ")"),
                 "\\header{tagline = \"\"}",
-                "\\Melody = {",
+                "\\melody = {",
                 paste("    \\time", time),
                 paste("    \\key", key, mode),
                 paste("    \\clef", clef),
-                paste("   ", toene),
+                paste("   ", notes),
                 if(endbar) 
                         "   \\bar \"|.\"",
                 "  }",
@@ -144,47 +182,4 @@ lilyinput <- function(X, file = "Rsong.ly",
                 if(midi){ c("    \\midi{",  paste("      \\tempo", tempo), "  }")},
                 "   }"))
 }
-
-FF1airsh <- filter(midi_db, title == "FF1airsh.mid", channel == 0)
-FF1airsh <- FF1airsh %>%
-            mutate(ioi      = c(diff(time, time, lag = 1, 
-                                     differences = 1), last(length)),
-                   dur      = sapply(ioi, symbolize_dur))
-
-X <- with(FF1airsh, data.frame(  note = notename %>% sub(pattern = "#", 
-                                                         replacement = "is",
-                                                         x = .), 
-                                 duration = dur,
-                                 tie = dur %>%
-                                         as.character %>%
-                                         str_detect("~")))
-
-X <- X %>% mutate_if(is.factor, as.character)
-
-lilyinput(X,
-          file = "Rsong.ly",
-          Major = TRUE,
-          key = "c",
-          clef = "treble",
-          time = "4/4",
-          endbar = FALSE,
-          midi = TRUE,
-          tempo = "4 = 150")
-
-
-
-## test:
-#  X <- data.frame(note = c(3, 0, 1, 3, -4, -2, 0, 1, 3, 1, 0, -2, NA),  
-#    duration = c(2, 4, 8, 2, 2, 8, 8, 8, 8, 4, 4, 1, 1), 
-#    punctuation = c(FALSE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE), 
-#    slur = c(FALSE, TRUE, TRUE, FALSE, FALSE, TRUE, FALSE, FALSE, FALSE, TRUE, FALSE, FALSE, FALSE))
-#
-#  lilyinput(X, file = "c:/test2.ly")
-#  
-# Y <- data.frame(note = c(3, 5, 7, 8, 10, 10, 12, 12, 12, 12, 10, 12, 12, 12, 12, 10, 8, 8, 8, 8, 7, 7, 5, 5, 5, 5, 3, NA),  
-#    duration = c(4, 4, 4, 4, 2, 2, 4, 4, 4, 4, 2, 4, 4, 4, 4, 2, 4, 4, 4, 4, 2, 2, 4, ,4, 4, 4, 2, 1), 
-#    punctuation = FALSE, 
-#    slur = FALSE)
-#    
-#lilyinput(Y, file="c:/Bsp.ly")
 
