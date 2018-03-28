@@ -3,7 +3,7 @@ library(tuneR)
 
 #### ticks2rhythm ####
 
-# ticks2rhythm takes arguments x and tpqn.
+# ticks2rhythm takes arguments tick_value and tpqn.
 # tick_value is defined by a note length or inter onset interval
 # tpqn is a constant that defines the ticks per quarter note (defaults to 480)
 
